@@ -1,7 +1,7 @@
 from distutils.dist import Distribution
 from distutils.cmd import Command
-from concurrent.futures import ThreadPoolExecutor
-import asyncio
+import multiprocessing
+import sys
 
 
 class SequencifyFail(RuntimeError):
@@ -10,6 +10,9 @@ class SequencifyFail(RuntimeError):
 
 class OrchDistribution(Distribution):
     def __init__(self, *args, **kwargs):
+        self.max_workers = kwargs.get('max_workers', None if sys.version_info >= (3, 5) else multiprocessing.cpu_count() * 5)
+        if 'max_workers' in kwargs:
+            del kwargs['max_workers']
         super().__init__(*args, **kwargs)
         self.is_running = {}
 
@@ -34,14 +37,23 @@ class OrchDistribution(Distribution):
                 return False
         return True
 
+    def _run_commands_fallback(self, commands):
+        for cmd in commands:
+            super(OrchDistribution, self).run_command(cmd)
+
     def _run_commands(self, commands):
         try:
             commands = self.sequencify_commands(commands)
         except SequencifyFail:
-            for cmd in commands:
-                super(OrchDistribution, self).run_command(cmd)
+            self._run_commands_fallback(commands)
             return
-        with ThreadPoolExecutor() as job_pool:
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+            import asyncio
+        except ImportError:
+            self._run_commands_fallback(commands)
+            return
+        with ThreadPoolExecutor(max_workers=self.max_workers) as job_pool:
             event_loop = asyncio.new_event_loop()
             try:
                 futures = []
