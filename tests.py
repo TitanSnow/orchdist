@@ -1,29 +1,33 @@
 import unittest
+import time
 import orchdist
 
 
 class TestOrchdist(unittest.TestCase):
     @staticmethod
-    def seq_test(self, src, dest):
+    def _seq_test(self, src, dest, long_test=False):
         crt = orchdist.CommandCreator()
         result = []
-        def run(self):
-            result.append(self.get_command_name())
         crt.add('a')
-        crt.on('a', fn=run)
         crt.add('b', ['a'])
-        crt.on('b', fn=run)
         crt.add('c', ['a'])
-        crt.on('c', fn=run)
         crt.add('d', ['b', 'c'])
-        crt.on('d', fn=run)
         crt.add('e', ['f'])
         crt.add('f', ['e'])
         crt.add('g', ['g'])
 
+        @crt.on('a')
+        @crt.on('b')
+        @crt.on('c')
+        @crt.on('d')
+        def run(self):
+            if long_test:
+                time.sleep(0.05)
+            result.append(self.get_command_name())
+
         dist = orchdist.OrchDistribution()
         dist.register_cmdclasses(crt.create_all())
-        dist.add_commands(*crt.create_all().keys())
+        dist.add_commands(*list(src))
 
         try:
             actual = dist.sequencify_commands(list(src))
@@ -31,6 +35,25 @@ class TestOrchdist(unittest.TestCase):
             self.assertEqual(dest, None)
             return
         self.assertEqual(list(dest), actual)
+
+        if len(src) == 1:
+            dist.run_command(src)
+        else:
+            dist.run_commands()
+        self.assertEqual(len(result), len(dest))
+        self.assertEqual(set(result), set(dest))
+        vis = set()
+        for cmd in result:
+            for dep in dist.get_command_obj(cmd).get_sub_commands():
+                self.assertIn(dep, vis)
+            vis.add(cmd)
+            self.assertFalse(bool(dist.is_running.get(cmd)))
+            self.assertTrue(bool(dist.have_run.get(cmd)))
+
+    @staticmethod
+    def seq_test(self, src, dest):
+        TestOrchdist._seq_test(self, src, dest, False)
+        TestOrchdist._seq_test(self, src, dest, True)
 
     def test_a2a(self):
         TestOrchdist.seq_test(self, 'a', 'a')
@@ -67,6 +90,60 @@ class TestOrchdist(unittest.TestCase):
 
     def test_g2recursive(self):
         TestOrchdist.seq_test(self, 'g', None)
+
+    def test_raise(self):
+        crt = orchdist.CommandCreator()
+        crt.add('good')
+        crt.add('bad')
+        class BadGuy(Exception):
+            pass
+        @crt.on('bad')
+        def run(self):
+            raise BadGuy
+        dist = orchdist.OrchDistribution()
+        dist.register_cmdclasses(crt.create_all())
+        dist.add_commands(*crt.create_all().keys())
+        with self.assertRaises(BadGuy):
+            dist.run_commands()
+        self.assertFalse(bool(dist.is_running.get('bad')))
+        self.assertFalse(bool(dist.have_run.get('bad')))
+
+    def test_OrchCommand_on(self):
+        dist = orchdist.Distribution()
+        cmd = orchdist.OrchCommand(dist)
+        run = False
+        cmd.run()
+        self.assertFalse(run)
+        @cmd.on('run')
+        def another(self):
+            nonlocal run
+            run = True
+        cmd.run()
+        self.assertTrue(run)
+
+    def test_run_command_fallback(self):
+        crt = orchdist.CommandCreator()
+        crt.add('a', ['b'])
+        crt.add('b', ['a'])
+        result = []
+        @crt.on('a')
+        @crt.on('b')
+        def run(self):
+            result.append(self.get_command_name())
+        dist = orchdist.OrchDistribution()
+        dist.register_cmdclasses(crt.create_all())
+        dist.add_commands(*crt.create_all().keys())
+        dist.run_commands()
+        self.assertEqual(len(result), 2)
+        self.assertEqual(set(result), set('ab'))
+        self.assertTrue(bool(dist.have_run.get('a')))
+        self.assertTrue(bool(dist.have_run.get('b')))
+        self.assertFalse(bool(dist.is_running.get('a')))
+        self.assertFalse(bool(dist.is_running.get('b')))
+
+
+def suite():
+    return unittest.TestLoader().loadTestsFromTestCase(TestOrchdist)
 
 
 if __name__ == '__main__':
