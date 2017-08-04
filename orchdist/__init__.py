@@ -73,5 +73,101 @@ class OrchDistribution(Distribution):
     def run_commands(self):
         self._run_commands(self.commands)
 
+    def register_cmdclass(self, command, klass):
+        self.cmdclass[command] = klass
 
-__all__ = ('OrchDistribution',)
+    def register_cmdclasses(self, cmdclass):
+        for command, klass in cmdclass.items():
+            self.register_cmdclass(command, klass)
+
+    def add_commands(self, *commands):
+        if not hasattr(self, 'commands'):
+            self.commands = []
+        self.commands.extend(commands)
+
+
+class OrchCommand(Command):
+    cmdclass = {}
+
+    def __init__(self, dist):
+        super().__init__(dist)
+        OrchDistribution.register_cmdclasses(self.distribution, self.cmdclass)
+
+    @classmethod
+    def add_sub_command(cls, command, predicate=None, klass=None):
+        cls.sub_commands.append((command, predicate))
+        if klass is not None:
+            cls.cmdclass[command] = klass
+
+    @classmethod
+    def set_command_name(cls, name):
+        cls.command_name = name
+
+    @classmethod
+    def create_subclass(cls):
+        class UnnamedCommand(cls):
+            cmdclass = {}
+            sub_commands = []
+            command_name = 'UnnamedCommand'
+        return UnnamedCommand
+
+    @classmethod
+    def on(cls, name=None, fn=None):
+        if fn is not None:
+            setattr(cls, name if name is not None else fn.__name__, fn)
+        else:
+            def func(fn):
+                cls.on(name, fn)
+                return fn
+            return func
+
+    def initialize_options(self):
+        pass
+
+    def finalize_options(self):
+        pass
+
+    def run(self):
+        pass
+
+
+class CommandCreator:
+    def __init__(self):
+        self.cmddep = {}
+        self.cmdcls = {}
+        self.cmdfn = {}
+
+    def add(self, command, deps=tuple()):
+        self.cmddep[command] = deps
+
+    def on(self, command, name=None, fn=None):
+        if fn is not None:
+            if command not in self.cmdfn:
+                self.cmdfn[command] = {}
+            self.cmdfn[command][name if name is not None else fn.__name__] = fn
+        else:
+            def func(fn):
+                self.on(command, name, fn)
+                return fn
+            return func
+
+    def create(self, command, klass=OrchCommand):
+        if command in self.cmdcls:
+            return self.cmdcls[command]
+        cmdclass = klass.create_subclass()
+        cmdclass.set_command_name(command)
+        for name, fn in self.cmdfn.get(command, {}).items():
+            cmdclass.on(name, fn)
+        self.cmdcls[command] = cmdclass
+        for dep in self.cmddep[command]:
+            cmdclass.add_sub_command(dep, None, self.create(dep, klass))
+        return cmdclass
+
+    def create_all(self):
+        result = {}
+        for cmd in self.cmddep:
+            result[cmd] = self.create(cmd)
+        return result
+
+
+__all__ = ('OrchDistribution', 'OrchCommand', 'CommandCreator')
