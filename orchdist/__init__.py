@@ -9,6 +9,10 @@ class SequencifyFail(RuntimeError):
 
 
 class OrchDistribution(Distribution):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.is_running = {}
+
     def sequencify_commands(self, commands):
         def sequencify(commands, results, nest):
             for command in commands:
@@ -39,33 +43,39 @@ class OrchDistribution(Distribution):
             return
         with ThreadPoolExecutor() as job_pool:
             event_loop = asyncio.new_event_loop()
-            futures = []
-            def _runs():
-                def _run(command):
-                    try:
-                        super(OrchDistribution, self).run_command(command)
-                    except Exception as e:
+            try:
+                futures = []
+                def _runs():
+                    def _run(command):
+                        try:
+                            super(OrchDistribution, self).run_command(command)
+                        except Exception as e:
+                            event_loop.stop()
+                            return e
+                        finally:
+                            del self.is_running[command]
+                        event_loop.call_soon_threadsafe(_runs)
+                        return None
+                    finished = True
+                    for cmd in commands:
+                        if not self.have_run.get(cmd):
+                            finished = False
+                            break
+                    if finished:
                         event_loop.stop()
-                        return e
-                    event_loop.call_soon_threadsafe(_runs)
-                    return None
-                finished = True
-                for cmd in commands:
-                    if not self.have_run.get(cmd):
-                        finished = False
-                        break
-                if finished:
-                    event_loop.stop()
-                    return
-                for cmd in commands:
-                    if not self.have_run.get(cmd) and self.is_sub_commands_have_run(cmd):
-                        futures.append(job_pool.submit(_run, cmd))
-            _runs()
-            event_loop.run_forever()
-            for future in futures:
-                e = future.result()
-                if e is not None:
-                    raise e
+                        return
+                    for cmd in commands:
+                        if not self.have_run.get(cmd) and not self.is_running.get(cmd) and self.is_sub_commands_have_run(cmd):
+                            self.is_running[cmd] = True
+                            futures.append(job_pool.submit(_run, cmd))
+                _runs()
+                event_loop.run_forever()
+                for future in futures:
+                    e = future.result()
+                    if e is not None:
+                        raise e
+            finally:
+                event_loop.close()
 
     def run_command(self, command):
         self._run_commands([command])
