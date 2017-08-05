@@ -141,6 +141,33 @@ class TestOrchdist(unittest.TestCase):
         self.assertFalse(bool(dist.is_running.get('a')))
         self.assertFalse(bool(dist.is_running.get('b')))
 
+    def test_max_workers(self):
+        # single worker
+        dist = orchdist.OrchDistribution(max_workers=1)
+        crt = orchdist.CommandCreator()
+        result = []
+        crt.add('a', ['b', 'c'])
+        crt.add('b')
+        crt.add('c')
+        @crt.on('a')
+        @crt.on('b')
+        @crt.on('c')
+        def run(self):
+            name = self.get_command_name()
+            if name == 'b':
+                time.sleep(0.05)
+            result.append(name)
+        dist.register_cmdclasses(crt.create_all())
+        dist.add_commands('a')
+        dist.run_command('a')
+        self.assertEqual(result, ['b', 'c', 'a'])
+        dist = orchdist.OrchDistribution(max_workers=2)
+        dist.register_cmdclasses(crt.create_all())
+        dist.add_commands('a')
+        result = []
+        dist.run_command('a')
+        self.assertEqual(result, ['c', 'b', 'a'])
+
 
 def suite():
     return unittest.TestLoader().loadTestsFromTestCase(TestOrchdist)

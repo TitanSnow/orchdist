@@ -10,6 +10,9 @@ class SequencifyFail(RuntimeError):
 
 class OrchDistribution(Distribution):
     def __init__(self, *args, **kwargs):
+        self.max_workers = kwargs.get('max_workers')
+        if 'max_workers' in kwargs:
+            del kwargs['max_workers']
         super().__init__(*args, **kwargs)
         self.is_running = {}
 
@@ -41,7 +44,7 @@ class OrchDistribution(Distribution):
             for cmd in commands:
                 super(OrchDistribution, self).run_command(cmd)
             return
-        with ThreadPoolExecutor() as job_pool:
+        with ThreadPoolExecutor(max_workers=self.max_workers) as job_pool:
             event_loop = asyncio.new_event_loop()
             try:
                 futures = []
