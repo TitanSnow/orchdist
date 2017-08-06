@@ -78,7 +78,6 @@ class OrchDistribution(Distribution):
                         try:
                             super(OrchDistribution, self).run_command(command)
                         except Exception as e:
-                            # FIXME: sometimes exceptions make it run forever
                             event_loop.stop()
                             return e
                         finally:
@@ -97,7 +96,7 @@ class OrchDistribution(Distribution):
                         if not self.have_run.get(cmd) and not self.is_running.get(cmd) and self.is_sub_commands_have_run(cmd):
                             self.is_running[cmd] = True
                             futures.append(job_pool.submit(_run, cmd))
-                _runs()
+                event_loop.call_soon(_runs)
                 event_loop.run_forever()
                 for future in futures:
                     e = future.result()
