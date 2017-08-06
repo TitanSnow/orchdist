@@ -143,7 +143,8 @@ class OrchCommand(Command):
         pass
 
     def run(self):
-        pass
+        for cmd_name in self.get_sub_commands():
+            self.run_command(cmd_name)
 
 
 class CommandCreator:
