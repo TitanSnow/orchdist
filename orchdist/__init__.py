@@ -4,6 +4,7 @@ from distutils.ccompiler import new_compiler
 from distutils.sysconfig import customize_compiler
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+from functools import partial
 
 
 class SequencifyFail(RuntimeError):
@@ -302,6 +303,55 @@ class Link(BuildC):
                                     self.target_lang)
 
 
+class TargetCreator:
+    def __init__(self, result):
+        self.result = result
+
+    def do(self, cmdclass):
+        self.result['_cmdclass'] = cmdclass.create_subclass()
+        return self
+
+    def set_option(self, option, value):
+        self.result[option] = value
+        return self
+
+    def __getattr__(self, attr):
+        actions = {
+            'preprocess': partial(self.do, Preprocess),
+            'compile': partial(self.do, Compile),
+            'static_link': partial(self.do, StaticLink),
+            'link': partial(self.do, Link),
+        }
+        return actions.get(attr, partial(self.set_option, attr))
+
+    @staticmethod
+    def archive(target):
+        target = target.copy()
+        klass = target['_cmdclass']
+        del target['_cmdclass']
+        for k, v in target.items():
+            getattr(klass, k)
+            setattr(klass, k, v)
+        return klass
+
+
+class Builder(CommandCreator):
+    def __init__(self):
+        super().__init__()
+        self.targets = {}
+
+    def target(self, name, deps=tuple()):
+        self.add(name, deps)
+        self.targets[name] = {}
+        return TargetCreator(self.targets[name])
+
+    def create(self, command, klass=OrchCommand):
+        if command not in self.targets:
+            return super().create(command, klass)
+        else:
+            return super().create(command, TargetCreator.archive(self.targets[command]))
+
+
 __all__ = ('OrchDistribution',
            'OrchCommand',
            'CommandCreator',
@@ -309,4 +359,6 @@ __all__ = ('OrchDistribution',
            'Preprocess',
            'Compile',
            'StaticLink',
-           'Link')
+           'Link',
+           'TargetCreator',
+           'Builder')
