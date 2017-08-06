@@ -1,3 +1,7 @@
+"""
+A python module for executing ``distutils`` commands in concurrency
+"""
+
 from distutils.dist import Distribution
 from distutils.cmd import Command
 from concurrent.futures import ThreadPoolExecutor
@@ -5,11 +9,24 @@ import asyncio
 
 
 class SequencifyFail(RuntimeError):
+    """internal exception -- fail to sequencify"""
     pass
 
 
 class OrchDistribution(Distribution):
+    """the core of orchdist
+
+    concurrent distclass
+
+    pass to ``distclass`` keyword when calling ``setup()`` to use in ``setup.py``
+
+    *OrchDistribution expects commands it runs to run their sub commands in ``run`` method*"""
+
     def __init__(self, *args, **kwargs):
+        """
+        keyword arguments:
+          max_workers: specify the max number of workers to execute commands
+        """
         self.max_workers = kwargs.get('max_workers')
         if 'max_workers' in kwargs:
             del kwargs['max_workers']
@@ -17,6 +34,12 @@ class OrchDistribution(Distribution):
         self.is_running = {}
 
     def sequencify_commands(self, commands):
+        """sequencify ``commands``. returns a list of sequencified commands
+
+        sub commands will be put before their parent classes
+
+        raise ``SequencifyFail`` if fails"""
+
         def sequencify(commands, results, nest):
             for command in commands:
                 if command not in results:
@@ -32,12 +55,14 @@ class OrchDistribution(Distribution):
         return sequencify(commands, [], [])
 
     def is_sub_commands_have_run(self, command):
+        """returns whether all sub commands of ``command`` have run"""
         for subcmd in self.get_command_obj(command).get_sub_commands():
             if not self.have_run.get(subcmd):
                 return False
         return True
 
     def _run_commands(self, commands):
+        """run given ``commands`` in concurrency"""
         try:
             commands = self.sequencify_commands(commands)
         except SequencifyFail:
@@ -53,6 +78,7 @@ class OrchDistribution(Distribution):
                         try:
                             super(OrchDistribution, self).run_command(command)
                         except Exception as e:
+                            # FIXME: sometimes exceptions make it run forever
                             event_loop.stop()
                             return e
                         finally:
@@ -87,19 +113,26 @@ class OrchDistribution(Distribution):
         self._run_commands(self.commands)
 
     def register_cmdclass(self, command, klass):
+        """register ``klass`` with name ``command`` in ``self.cmdclass``"""
         self.cmdclass[command] = klass
 
     def register_cmdclasses(self, cmdclass):
+        """register ``cmdclass`` to ``self.cmdclass``"""
         for command, klass in cmdclass.items():
             self.register_cmdclass(command, klass)
 
     def add_commands(self, *commands):
+        """add ``commands`` to ``self.commands``"""
         if not hasattr(self, 'commands'):
             self.commands = []
         self.commands.extend(commands)
 
 
 class OrchCommand(Command):
+    """base class of commands in orchdist
+
+    added useful methods to custom a command"""
+
     cmdclass = {}
 
     def __init__(self, dist):
@@ -108,16 +141,24 @@ class OrchCommand(Command):
 
     @classmethod
     def add_sub_command(cls, command, predicate=None, klass=None):
+        """add sub command with name ``command``
+
+        this sub command will be run if ``predicate`` is None or call it returns True
+
+        the command class of this sub command is set to ``klass``"""
+
         cls.sub_commands.append((command, predicate))
         if klass is not None:
             cls.cmdclass[command] = klass
 
     @classmethod
     def set_command_name(cls, name):
+        """set name of command class"""
         cls.command_name = name
 
     @classmethod
     def create_subclass(cls):
+        """create a subclass of this class"""
         class UnnamedCommand(cls):
             cmdclass = {}
             sub_commands = []
@@ -126,6 +167,18 @@ class OrchCommand(Command):
 
     @classmethod
     def on(cls, name=None, fn=None):
+        """redefine method ``name`` with ``fn`` of this class
+
+        ``name`` will be ``fn.__name__`` if ``name`` is None
+
+        if ``fn`` is None, will return a function to be used as a decorator like ::
+
+            @cmdclass.on()
+            def run(self):
+                pass
+
+        """
+
         if fn is not None:
             setattr(cls, name if name is not None else fn.__name__, fn)
         else:
@@ -146,15 +199,28 @@ class OrchCommand(Command):
 
 
 class CommandCreator:
+    """a util class to create commands"""
     def __init__(self):
         self.cmddep = {}
         self.cmdcls = {}
         self.cmdfn = {}
 
     def add(self, command, deps=tuple()):
+        """add command with name ``command`` and dependencies ``deps``"""
         self.cmddep[command] = deps
 
     def on(self, command, name=None, fn=None):
+        """redefine method ``name`` of ``command``
+
+        ``name`` will be ``fn.__name__`` if ``name`` is None
+
+        if ``fn`` is None, will return a function to be used as a decorator like ::
+
+            @creator.on('command1')
+            def run(self):
+                pass
+
+        """
         if fn is not None:
             if command not in self.cmdfn:
                 self.cmdfn[command] = {}
@@ -166,6 +232,7 @@ class CommandCreator:
             return func
 
     def create(self, command, klass=OrchCommand):
+        """create command class of ``command`` to be subclass of ``klass``"""
         if command in self.cmdcls:
             return self.cmdcls[command]
         cmdclass = klass.create_subclass()
@@ -178,6 +245,7 @@ class CommandCreator:
         return cmdclass
 
     def create_all(self):
+        """create all command classes. returns a dict maps command name to command class"""
         result = {}
         for cmd in self.cmddep:
             result[cmd] = self.create(cmd)
