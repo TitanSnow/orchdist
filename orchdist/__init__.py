@@ -5,6 +5,7 @@ from distutils.sysconfig import customize_compiler
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 from functools import partial
+import typing
 
 
 class SequencifyFail(RuntimeError):
@@ -149,10 +150,11 @@ class OrchCommand(Command):
 
 
 class CommandCreator:
-    def __init__(self):
+    def __init__(self, distribution=None):
         self.cmddep = {}
         self.cmdcls = {}
         self.cmdfn = {}
+        self.distribution = distribution
 
     def add(self, command, deps=tuple()):
         self.cmddep[command] = deps
@@ -186,6 +188,12 @@ class CommandCreator:
             result[cmd] = self.create(cmd)
         return result
 
+    def apply(self, dist=None):
+        if dist is None:
+            dist = self.distribution
+        dist.register_cmdclasses(self.create_all())
+        dist.add_commands(*self.create_all().keys())
+
 
 class BuildC(OrchCommand):
     plat = None
@@ -199,13 +207,21 @@ class BuildC(OrchCommand):
         self.result = None
 
     def new_compiler(self):
-        compiler = new_compiler(self.plat,
-                                self.compiler,
-                                self.verbose,
-                                self.dry_run,
-                                self.force)
+        compiler = new_compiler(self.get_option('plat'),
+                                self.get_option('compiler'),
+                                self.get_option('verbose'),
+                                self.get_option('dry_run'),
+                                self.get_option('force'))
         customize_compiler(compiler)
         return compiler
+
+    def get_option(self, option):
+        value = getattr(self, option)
+        if isinstance(value, typing.Callable):
+            setattr(self, option, value())
+            return getattr(self, option)
+        else:
+            return value
 
 
 class Preprocess(BuildC):
@@ -219,12 +235,12 @@ class Preprocess(BuildC):
     def run(self):
         super().run()
         compiler = self.new_compiler()
-        self.result = compiler.preprocess(self.source,
-                                          self.output_file,
-                                          self.macros,
-                                          self.include_dirs,
-                                          self.extra_preargs,
-                                          self.extra_postargs)
+        self.result = compiler.preprocess(self.get_option('source'),
+                                          self.get_option('output_file'),
+                                          self.get_option('macros'),
+                                          self.get_option('include_dirs'),
+                                          self.get_option('extra_preargs'),
+                                          self.get_option('extra_postargs'))
 
 
 class Compile(BuildC):
@@ -240,14 +256,14 @@ class Compile(BuildC):
     def run(self):
         super().run()
         compiler = self.new_compiler()
-        self.result = compiler.compile(self.sources,
-                                       self.output_dir,
-                                       self.macros,
-                                       self.include_dirs,
-                                       self.debug,
-                                       self.extra_preargs,
-                                       self.extra_postargs,
-                                       self.depends)
+        self.result = compiler.compile(self.get_option('sources'),
+                                       self.get_option('output_dir'),
+                                       self.get_option('macros'),
+                                       self.get_option('include_dirs'),
+                                       self.get_option('debug'),
+                                       self.get_option('extra_preargs'),
+                                       self.get_option('extra_postargs'),
+                                       self.get_option('depends'))
 
 
 class StaticLink(BuildC):
@@ -260,11 +276,11 @@ class StaticLink(BuildC):
     def run(self):
         super().run()
         compiler = self.new_compiler()
-        self.result = compiler.create_static_lib(self.objects,
-                                                 self.output_libname,
-                                                 self.output_dir,
-                                                 self.debug,
-                                                 self.target_lang)
+        self.result = compiler.create_static_lib(self.get_option('objects'),
+                                                 self.get_option('output_libname'),
+                                                 self.get_option('output_dir'),
+                                                 self.get_option('debug'),
+                                                 self.get_option('target_lang'))
 
 
 class Link(BuildC):
@@ -288,19 +304,19 @@ class Link(BuildC):
     def run(self):
         super().run()
         compiler = self.new_compiler()
-        self.result = compiler.link(self.target_desc,
-                                    self.objects,
-                                    self.output_filename,
-                                    self.output_dir,
-                                    self.libraries,
-                                    self.library_dirs,
-                                    self.runtime_library_dirs,
-                                    self.export_symbols,
-                                    self.debug,
-                                    self.extra_preargs,
-                                    self.extra_postargs,
-                                    self.build_temp,
-                                    self.target_lang)
+        self.result = compiler.link(self.get_option('target_desc'),
+                                    self.get_option('objects'),
+                                    self.get_option('output_filename'),
+                                    self.get_option('output_dir'),
+                                    self.get_option('libraries'),
+                                    self.get_option('library_dirs'),
+                                    self.get_option('runtime_library_dirs'),
+                                    self.get_option('export_symbols'),
+                                    self.get_option('debug'),
+                                    self.get_option('extra_preargs'),
+                                    self.get_option('extra_postargs'),
+                                    self.get_option('build_temp'),
+                                    self.get_option('target_lang'))
 
 
 class TargetCreator:
@@ -336,8 +352,8 @@ class TargetCreator:
 
 
 class Builder(CommandCreator):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, distribution=None):
+        super().__init__(distribution)
         self.targets = {}
 
     def target(self, name, deps=tuple()):
@@ -350,6 +366,9 @@ class Builder(CommandCreator):
             return super().create(command, klass)
         else:
             return super().create(command, TargetCreator.archive(self.targets[command]))
+
+    def result_of(self, command):
+        return lambda self: self.distribution.get_command_obj(command).result
 
 
 __all__ = ('OrchDistribution',
