@@ -1,5 +1,7 @@
 from distutils.dist import Distribution
 from distutils.cmd import Command
+from distutils.ccompiler import new_compiler
+from distutils.sysconfig import customize_compiler
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
 
@@ -183,4 +185,127 @@ class CommandCreator:
         return result
 
 
-__all__ = ('OrchDistribution', 'OrchCommand', 'CommandCreator')
+class BuildC(OrchCommand):
+    plat = None
+    compiler = None
+    verbose = 0
+    dry_run = 0
+    force = 0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.result = None
+
+    def new_compiler(self):
+        compiler = new_compiler(self.plat,
+                                self.compiler,
+                                self.verbose,
+                                self.dry_run,
+                                self.force)
+        customize_compiler(compiler)
+        return compiler
+
+
+class Preprocess(BuildC):
+    source = None
+    output_file = None
+    macros = None
+    include_dirs = None
+    extra_preargs = None
+    extra_postargs = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.preprocess(self.source,
+                                          self.output_file,
+                                          self.macros,
+                                          self.include_dirs,
+                                          self.extra_preargs,
+                                          self.extra_postargs)
+
+
+class Compile(BuildC):
+    sources = None
+    output_dir = None
+    macros = None
+    include_dirs = None
+    debug = 0
+    extra_preargs = None
+    extra_postargs = None
+    depends = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.compile(self.sources,
+                                       self.output_dir,
+                                       self.macros,
+                                       self.include_dirs,
+                                       self.debug,
+                                       self.extra_preargs,
+                                       self.extra_postargs,
+                                       self.depends)
+
+
+class StaticLink(BuildC):
+    objects = None
+    output_libname = None
+    output_dir = None
+    debug = 0
+    target_lang = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.create_static_lib(self.objects,
+                                                 self.output_libname,
+                                                 self.output_dir,
+                                                 self.debug,
+                                                 self.target_lang)
+
+
+class Link(BuildC):
+    SHARED_OBJECT = "shared_object"
+    SHARED_LIBRARY = "shared_library"
+    EXECUTABLE = "executable"
+    target_desc = None
+    objects = None
+    output_filename = None
+    output_dir = None
+    libraries = None
+    library_dirs = None
+    runtime_library_dirs = None
+    export_symbols = None
+    debug = 0
+    extra_preargs = None
+    extra_postargs = None
+    build_temp = None
+    target_lang = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.link(self.target_desc,
+                                    self.objects,
+                                    self.output_filename,
+                                    self.output_dir,
+                                    self.libraries,
+                                    self.library_dirs,
+                                    self.runtime_library_dirs,
+                                    self.export_symbols,
+                                    self.debug,
+                                    self.extra_preargs,
+                                    self.extra_postargs,
+                                    self.build_temp,
+                                    self.target_lang)
+
+
+__all__ = ('OrchDistribution',
+           'OrchCommand',
+           'CommandCreator',
+           'BuildC',
+           'Preprocess',
+           'Compile',
+           'StaticLink',
+           'Link')
