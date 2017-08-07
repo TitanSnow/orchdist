@@ -45,8 +45,12 @@ A python module for executing ``distutils`` commands in concurrency
 
 from distutils.dist import Distribution
 from distutils.cmd import Command
+from distutils.ccompiler import new_compiler
+from distutils.sysconfig import customize_compiler
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+from functools import partial
+import typing
 
 
 class SequencifyFail(RuntimeError):
@@ -240,10 +244,11 @@ class OrchCommand(Command):
 
 class CommandCreator:
     """a util class to create commands"""
-    def __init__(self):
+    def __init__(self, distribution=None):
         self.cmddep = {}
         self.cmdcls = {}
         self.cmdfn = {}
+        self.distribution = distribution
 
     def add(self, command, deps=tuple()):
         """add command with name ``command`` and dependencies ``deps``"""
@@ -291,6 +296,197 @@ class CommandCreator:
             result[cmd] = self.create(cmd)
         return result
 
+    def apply(self, dist=None):
+        if dist is None:
+            dist = self.distribution
+        dist.register_cmdclasses(self.create_all())
+        dist.add_commands(*self.create_all().keys())
 
-__all__ = ('OrchDistribution', 'OrchCommand', 'CommandCreator')
+
+class BuildC(OrchCommand):
+    plat = None
+    compiler = None
+    verbose = 0
+    dry_run = 0
+    force = 0
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.result = None
+
+    def new_compiler(self):
+        compiler = new_compiler(self.get_option('plat'),
+                                self.get_option('compiler'),
+                                self.get_option('verbose'),
+                                self.get_option('dry_run'),
+                                self.get_option('force'))
+        customize_compiler(compiler)
+        return compiler
+
+    def get_option(self, option):
+        value = getattr(self, option)
+        if isinstance(value, typing.Callable):
+            setattr(self, option, value())
+            return getattr(self, option)
+        else:
+            return value
+
+
+class Preprocess(BuildC):
+    source = None
+    output_file = None
+    macros = None
+    include_dirs = None
+    extra_preargs = None
+    extra_postargs = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.preprocess(self.get_option('source'),
+                                          self.get_option('output_file'),
+                                          self.get_option('macros'),
+                                          self.get_option('include_dirs'),
+                                          self.get_option('extra_preargs'),
+                                          self.get_option('extra_postargs'))
+
+
+class Compile(BuildC):
+    sources = None
+    output_dir = None
+    macros = None
+    include_dirs = None
+    debug = 0
+    extra_preargs = None
+    extra_postargs = None
+    depends = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.compile(self.get_option('sources'),
+                                       self.get_option('output_dir'),
+                                       self.get_option('macros'),
+                                       self.get_option('include_dirs'),
+                                       self.get_option('debug'),
+                                       self.get_option('extra_preargs'),
+                                       self.get_option('extra_postargs'),
+                                       self.get_option('depends'))
+
+
+class StaticLink(BuildC):
+    objects = None
+    output_libname = None
+    output_dir = None
+    debug = 0
+    target_lang = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.create_static_lib(self.get_option('objects'),
+                                                 self.get_option('output_libname'),
+                                                 self.get_option('output_dir'),
+                                                 self.get_option('debug'),
+                                                 self.get_option('target_lang'))
+
+
+class Link(BuildC):
+    SHARED_OBJECT = "shared_object"
+    SHARED_LIBRARY = "shared_library"
+    EXECUTABLE = "executable"
+    target_desc = None
+    objects = None
+    output_filename = None
+    output_dir = None
+    libraries = None
+    library_dirs = None
+    runtime_library_dirs = None
+    export_symbols = None
+    debug = 0
+    extra_preargs = None
+    extra_postargs = None
+    build_temp = None
+    target_lang = None
+
+    def run(self):
+        super().run()
+        compiler = self.new_compiler()
+        self.result = compiler.link(self.get_option('target_desc'),
+                                    self.get_option('objects'),
+                                    self.get_option('output_filename'),
+                                    self.get_option('output_dir'),
+                                    self.get_option('libraries'),
+                                    self.get_option('library_dirs'),
+                                    self.get_option('runtime_library_dirs'),
+                                    self.get_option('export_symbols'),
+                                    self.get_option('debug'),
+                                    self.get_option('extra_preargs'),
+                                    self.get_option('extra_postargs'),
+                                    self.get_option('build_temp'),
+                                    self.get_option('target_lang'))
+
+
+class TargetCreator:
+    def __init__(self, result):
+        self.result = result
+
+    def do(self, cmdclass):
+        self.result['_cmdclass'] = cmdclass.create_subclass()
+        return self
+
+    def set_option(self, option, value):
+        self.result[option] = value
+        return self
+
+    def __getattr__(self, attr):
+        actions = {
+            'preprocess': partial(self.do, Preprocess),
+            'compile': partial(self.do, Compile),
+            'static_link': partial(self.do, StaticLink),
+            'link': partial(self.do, Link),
+        }
+        return actions.get(attr, partial(self.set_option, attr))
+
+    @staticmethod
+    def archive(target):
+        target = target.copy()
+        klass = target['_cmdclass']
+        del target['_cmdclass']
+        for k, v in target.items():
+            getattr(klass, k)
+            setattr(klass, k, v)
+        return klass
+
+
+class Builder(CommandCreator):
+    def __init__(self, distribution=None):
+        super().__init__(distribution)
+        self.targets = {}
+
+    def target(self, name, deps=tuple()):
+        self.add(name, deps)
+        self.targets[name] = {}
+        return TargetCreator(self.targets[name])
+
+    def create(self, command, klass=OrchCommand):
+        if command not in self.targets:
+            return super().create(command, klass)
+        else:
+            return super().create(command, TargetCreator.archive(self.targets[command]))
+
+    def result_of(self, command):
+        return lambda self: self.distribution.get_command_obj(command).result
+
+
+__all__ = ('OrchDistribution',
+           'OrchCommand',
+           'CommandCreator',
+           'BuildC',
+           'Preprocess',
+           'Compile',
+           'StaticLink',
+           'Link',
+           'TargetCreator',
+           'Builder')
 __version__ = '0.1.0.dev1'

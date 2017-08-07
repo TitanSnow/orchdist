@@ -1,6 +1,9 @@
 import unittest
 import time
 import orchdist
+import os
+from os import path
+import subprocess
 
 
 class TestOrchdist(unittest.TestCase):
@@ -167,6 +170,48 @@ class TestOrchdist(unittest.TestCase):
         result = []
         dist.run_command('a')
         self.assertEqual(result, ['c', 'b', 'a'])
+    
+    def test_build(self):
+        dist = orchdist.OrchDistribution()
+        builder = orchdist.Builder(dist)
+        builder.target('preprocess')                    \
+               .source('tests/helloworld.c')            \
+               .preprocess()                            \
+               .output_file('helloworld_pped.c')
+        builder.target('compile')                       \
+               .sources(['tests/helloworld.c'])         \
+               .compile()                               \
+               .output_dir('.')
+        builder.target('static', ['compile'])           \
+               .objects(builder.result_of('compile'))   \
+               .static_link()                           \
+               .output_dir('.')                         \
+               .output_libname('helloworld')
+        builder.target('shared', ['compile'])           \
+               .objects(builder.result_of('compile'))   \
+               .target_desc(orchdist.Link.SHARED_LIBRARY)\
+               .link()                                  \
+               .output_dir('.')                         \
+               .output_filename('libhelloworld.so')
+        builder.target('exe', ['compile'])              \
+               .objects(builder.result_of('compile'))   \
+               .target_desc(orchdist.Link.EXECUTABLE)   \
+               .link()                                  \
+               .output_dir('.')                         \
+               .output_filename('helloworld.out')
+        builder.apply()
+        dist.run_commands()
+        self.assertTrue(path.exists('helloworld_pped.c'))
+        self.assertTrue(path.exists('tests/helloworld.o'))
+        self.assertTrue(path.exists('libhelloworld.a'))
+        self.assertTrue(path.exists('libhelloworld.so'))
+        self.assertTrue(path.exists('helloworld.out'))
+        self.assertEqual(subprocess.check_output(['./helloworld.out'], universal_newlines=True), 'HelloWorld!\n')
+        os.remove('helloworld_pped.c')
+        os.remove('tests/helloworld.o')
+        os.remove('libhelloworld.a')
+        os.remove('libhelloworld.so')
+        os.remove('helloworld.out')
 
 
 def suite():
